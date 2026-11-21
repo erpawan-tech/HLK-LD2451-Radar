@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LD2451 Radar · USB Telemetry</title>
+<!--
+  HLK-LD2451 USB dashboard
+  - Open this file directly in Chrome or Edge (desktop). Web Serial works on
+    file:// and https:// pages. Firefox/Safari do not support Web Serial.
+  - Close the Arduino Serial Monitor first (only one app may own the port).
+  - "Demo" button simulates traffic so you can try the UI without hardware.
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#090d12;--panel:#10161e;--panel2:#151d27;--line:#222d3b;--text:#d6dfe9;--muted:#75839a;
+  --accent:#3fb6ff;--red:#ff4d5e;--green:#2fd18a;--amber:#ffb547;--violet:#a98bff;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px;
+  border-bottom:1px solid var(--line);background:linear-gradient(#0e141b,#090d12)}
+header h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.3px;margin-right:6px}
+header h1 b{color:var(--accent)}
+button,select{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);
+  border-radius:8px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:#0f5d8f;border-color:#1b7fbf;color:#fff;font-weight:600}
+button.primary.on{background:#5a1f27;border-color:var(--red)}
+button.sm{padding:3px 9px;font-size:12px}
+button.toggled{border-color:var(--accent);color:var(--accent)}
+.pill{padding:4px 10px;border-radius:999px;font:12px var(--mono);border:1px solid var(--line);
+  background:var(--panel);color:var(--muted)}
+.pill.ok{color:var(--green);border-color:rgba(47,209,138,.45)}
+.pill.bad{color:var(--red);border-color:rgba(255,77,94,.45)}
+.pill.demo{color:var(--violet);border-color:rgba(169,139,255,.45)}
+#alarm{display:none;background:var(--red);border-color:var(--red);color:#fff;font-weight:700;
+  animation:blink .8s steps(2) infinite}
+#alarm.on{display:inline-block}
+@keyframes blink{50%{opacity:.35}}
+.spacer{flex:1}
+main{flex:1;display:grid;gap:12px;padding:12px;min-height:0;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  grid-template-rows:minmax(400px,1fr) minmax(360px,1fr)}
+@media (max-width:1100px){main{grid-template-columns:1fr;grid-template-rows:auto}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;
+  min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.card>h2{margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:1.1px;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:8px}
+.card>h2 .num{color:var(--accent);font-family:var(--mono)}
+.card>h2 .r{margin-left:auto;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0}
+.grow{flex:1;min-height:0;position:relative}
+canvas{display:block;width:100%;height:100%}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:6px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+
+/* --- classification panel --- */
+#cls{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:12px;flex:1;min-height:0}
+.metrics::-webkit-scrollbar{width:6px}.metrics::-webkit-scrollbar-thumb{background:#273445;border-radius:3px}
+#shapeBox{background:radial-gradient(ellipse at 50% 85%,#122030 0%,#0b1118 70%);border:1px solid var(--line);
+  border-radius:10px;position:relative;overflow:hidden;min-height:220px}
+#shapeBox svg{width:100%;height:100%;display:block}
+#shapeBox .tag{position:absolute;left:10px;top:8px;font:11px var(--mono);color:var(--muted)}
+#shapeBox .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--muted);font-size:13px}
+.metrics{display:flex;flex-direction:column;gap:7px;min-width:0;min-height:0;overflow-y:auto;padding-right:4px}
+.clsName{font-size:20px;font-weight:700;line-height:1.1}
+.clsSub{color:var(--muted);font-size:12px}
+.mrow small{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;
+  text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px}
+.mrow small b{font:600 12px var(--mono);color:var(--text);text-transform:none}
+.bar{height:8px;border-radius:5px;background:#1b2531;overflow:hidden}
+.bar i{display:block;height:100%;width:0;border-radius:5px;transition:width .25s}
+.sizes{display:flex;gap:4px}
+.sizes span{flex:1;text-align:center;font:10px var(--mono);padding:4px 0;border-radius:5px;
+  background:#1b2531;color:var(--muted);border:1px solid transparent}
+.sizes span.on{background:rgba(63,182,255,.15);color:var(--accent);border-color:rgba(63,182,255,.5)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;font-family:var(--mono);text-align:right}
+.note{font-size:11px;color:var(--amber);border-left:2px solid var(--amber);padding:3px 8px;
+  background:rgba(255,181,71,.06);border-radius:0 6px 6px 0}
+details{font-size:11px;color:var(--muted)}
+details summary{cursor:pointer;user-select:none}
+.tune{display:grid;grid-template-columns:auto 1fr 38px;gap:4px 8px;align-items:center;margin-top:6px}
+.tune input{width:100%;accent-color:var(--accent)}
+.tune output{font-family:var(--mono);color:var(--text);text-align:right}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:11px var(--mono);padding:3px 8px;border-radius:999px;border:1px solid var(--line);
+  cursor:pointer;background:var(--panel2)}
+.chip.sel{border-color:var(--accent);color:var(--accent)}
+
+/* --- charts --- */
+#charts{display:grid;grid-template-rows:1fr 1fr;gap:8px;flex:1;min-height:0}
+.chartBox{position:relative;min-height:0}
+.chartBox .lbl{position:absolute;left:46px;top:0;font-size:11px;color:var(--muted);z-index:1}
+#chartErr{display:none;color:var(--amber);font-size:12px;padding:20px;text-align:center}
+
+/* --- table + hex --- */
+.tableWrap{overflow:auto;flex:1;min-height:90px}
+table{width:100%;border-collapse:collapse;font:12.5px var(--mono)}
+th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{position:sticky;top:0;background:var(--panel);color:var(--muted);font:500 10.5px system-ui;
+  text-transform:uppercase;letter-spacing:.6px}
+th:nth-child(-n+2),td:nth-child(-n+2){text-align:left}
+tbody tr{cursor:pointer}
+tbody tr:hover td{background:rgba(255,255,255,.025)}
+tr.sel td{background:rgba(63,182,255,.1)!important}
+td.a{color:var(--red)}td.g{color:var(--green)}
+tr.empty td{text-align:center;color:var(--muted);padding:22px;cursor:default}
+.ico{display:inline-block;width:22px;text-align:center}
+#hexPanel{display:none;flex-direction:column;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;
+  height:42%;min-height:120px}
+#hexPanel.on{display:flex}
+#hexLog{flex:1;overflow:auto;background:#070a0e;border:1px solid var(--line);border-radius:8px;
+  padding:6px 8px;font:11.5px/1.5 var(--mono);white-space:pre}
+#hexLog .ts{color:#4b5a6e}#hexLog .h{color:var(--accent)}#hexLog .i{color:var(--muted)}
+#hexLog .e{color:var(--red)}
+.hexBar{display:flex;gap:6px;align-items:center;margin-bottom:6px;font-size:11px;color:var(--muted)}
+footer{padding:4px 16px 8px;color:var(--muted);font:11px var(--mono);display:flex;gap:16px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1><b>◉</b> HLK-LD2451 · USB Radar Telemetry</h1>
+  <button id="btnConnect" class="primary">Connect ESP32 (USB)</button>
+  <select id="baud" title="Baud rate">
+    <option>115200</option><option>230400</option><option>460800</option><option>921600</option>
+  </select>
+  <button id="btnDemo">Demo</button>
+  <span id="alarm" class="pill">⚠ APPROACHING ALARM</span>
+  <div class="spacer"></div>
+  <span id="fps" class="pill">0.0 fps</span>
+  <span id="conn" class="pill bad">disconnected</span>
+</header>
+
+<main>
+  <!-- 1. POLAR RADAR -->
+  <section class="card">
+    <h2>① Polar radar view <span class="num" id="tcount">0</span>
+      <span class="r"><button class="sm toggled" id="btnExpand" title="Expand angle axis for readability">Angle ×2.25</button></span></h2>
+    <div class="grow"><canvas id="radar"></canvas></div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--red)"></i>Approaching</span>
+      <span><i class="dot" style="background:var(--green)"></i>Moving away</span>
+      <span>Trails: last 3 s</span>
+      <span id="geoNote">Angle axis expanded ×2.25 for readability (labels show true angle)</span>
+    </div>
+  </section>
+
+  <!-- 2. SHAPE / CLASSIFICATION -->
+  <section class="card">
+    <h2>② Estimated object shape &amp; classification
+      <span class="r" id="selInfo">auto: nearest</span></h2>
+    <div id="cls">
+      <div id="shapeBox">
+        <span class="tag" id="shapeTag">RADAR REFLECTION PROFILE</span>
+        <div class="empty" id="shapeEmpty">No target</div>
+        <svg id="shapeSvg" viewBox="0 0 400 220" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+      <div class="metrics">
+        <div><div class="clsName" id="clsName">—</div><div class="clsSub" id="clsSub">waiting for targets</div></div>
+        <div class="mrow"><small>Confidence <b id="confV">—</b></small><div class="bar"><i id="confB" style="background:var(--accent)"></i></div></div>
+        <div class="mrow"><small>Signal strength (raw SNR) <b id="snrV">—</b></small><div class="bar"><i id="snrB" style="background:linear-gradient(90deg,#2fd18a,#ffb547,#ff4d5e)"></i></div></div>
+        <div class="mrow"><small>Reflection index (range-comp.) <b id="refV">—</b></small><div class="bar"><i id="refB" style="background:var(--violet)"></i></div></div>
+        <div class="mrow"><small>Reflection size</small>
+          <div class="sizes" id="sizes"><span>S</span><span>M</span><span>L</span><span>XL</span></div></div>
+        <dl class="kv">
+          <dt>Est. footprint</dt><dd id="dims">—</dd>
+          <dt>Typical RCS</dt><dd id="rcs">—</dd>
+          <dt>Dist · Speed</dt><dd id="ds">—</dd>
+        </dl>
+        <div class="chips" id="chips"></div>
+        <div class="note">Shape is <b>estimated</b> from SNR, speed &amp; distance telemetry — the LD2451 does not image the target.</div>
+        <details><summary>Classifier tuning (calibrate on your site)</summary>
+          <div class="tune">
+            <label>Car SNR ≥</label><input type="range" id="tCar" min="20" max="200" value="90"><output id="tCarO">90</output>
+            <label>Heavy SNR ≥</label><input type="range" id="tHeavy" min="60" max="255" value="180"><output id="tHeavyO">180</output>
+            <label>Range comp.</label><input type="range" id="kRange" min="0" max="60" value="30"><output id="kRangeO">30</output>
+            <label>Ped. max km/h</label><input type="range" id="vPed" min="2" max="20" value="10"><output id="vPedO">10</output>
+            <label>2-wheel max km/h</label><input type="range" id="vCyc" min="10" max="60" value="35"><output id="vCycO">35</output>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. CHARTS -->
+  <section class="card">
+    <h2>③ Real-time telemetry <span class="r" style="color:var(--muted)">last 30 s · per track</span></h2>
+    <div id="charts">
+      <div class="chartBox"><span class="lbl">Distance (m)</span><canvas id="cDist"></canvas></div>
+      <div class="chartBox"><span class="lbl">Speed (km/h)</span><canvas id="cSpd"></canvas></div>
+    </div>
+    <div id="chartErr">Chart.js could not be loaded from the CDN (no internet?). Radar, shape panel and table still work.</div>
+  </section>
+
+  <!-- 4. TABLE + HEX -->
+  <section class="card">
+    <h2>④ Live targets <span class="num" id="tcount2">0</span>
+      <span class="r"><button class="sm" id="btnHex">Show raw hex monitor</button></span></h2>
+    <div class="tableWrap">
+      <table>
+        <thead><tr><th>Track</th><th>Estimated shape</th><th>Dist (m)</th><th>Speed (km/h)</th>
+          <th>Angle (°)</th><th>Direction</th><th>SNR</th></tr></thead>
+        <tbody id="tbody"><tr class="empty"><td colspan="7">No targets — connect the ESP32 or press Demo</td></tr></tbody>
+      </table>
+    </div>
+    <div id="hexPanel">
+      <div class="hexBar">
+        <button class="sm" id="btnPause">Pause</button>
+        <button class="sm" id="btnClear">Clear</button>
+        <button class="sm" id="btnRawEsp" title="Send 'x' to the ESP32 to toggle the raw field">ESP raw field: ON</button>
+        <label><input type="checkbox" id="chkEmpty"> show empty frames</label>
+        <span class="spacer"></span><span id="hexCount">0 lines</span>
+      </div>
+      <div id="hexLog"></div>
+    </div>
+  </section>
+</main>
+<footer><span id="stats">frames 0 · len err 0 · tail err 0 · tx drop 0</span><span id="lastMsg"></span></footer>
+
+<script>
+(() => {
+'use strict';
+// =============================================================================
+//  CONFIG
+// =============================================================================
+const CFG = {
+  MAX_RANGE: 100, FOV: 20,              // sensor field of view (deg, half angle)
+  TRAIL_MS: 3000, TRACK_TIMEOUT_MS: 1500,
+  CHART_WINDOW_S: 30, VOTE_WINDOW: 15,
+  GATE_DIST_M: 8, GATE_ANGLE_DEG: 8,    // tracker association gate
+  REF_DIST: 30,                         // SNR range-compensation reference (m)
+  HEX_MAX_LINES: 400,
+};
+const TUNE = { tCar: 90, tHeavy: 180, kRange: 30, vPed: 10, vCyc: 35 };
+
+const CLASSES = {
+  PED: { name: 'Pedestrian',     sub: 'Person / small object',  ico: '🚶', dims: '≈ 0.5 × 1.7 m', rcs: '≈ 0.5 – 1 m²',  size: 0, L: '0.5 m', H: '1.7 m' },
+  CYC: { name: 'Two-wheeler',    sub: 'Bicycle / motorcycle',   ico: '🚲', dims: '≈ 1.8 × 1.2 m', rcs: '≈ 1 – 5 m²',    size: 1, L: '1.8 m', H: '1.6 m' },
+  CAR: { name: 'Car',            sub: 'Sedan / SUV',            ico: '🚗', dims: '≈ 4.5 × 1.5 m', rcs: '≈ 10 – 100 m²', size: 2, L: '4.5 m', H: '1.5 m' },
+  HVY: { name: 'Heavy vehicle',  sub: 'Bus / Truck',            ico: '🚚', dims: '≈ 12 × 3.5 m',  rcs: '> 100 m²',      size: 3, L: '12 m',  H: '3.5 m' },
+};
+const PALETTE = ['#3fb6ff', '#ffb547', '#a98bff', '#ff7ac6', '#5ce1e6', '#c3e15c', '#ff8a4d', '#8fa3ff'];
+
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const t0 = performance.now();
+const nowS = () => (performance.now() - t0) / 1000;
+
+// =============================================================================
+//  CLASSIFIER  (heuristic: range-compensated SNR + speed)
+//  Received power falls with range (radar equation ~1/R^4), so the same object
+//  reports lower SNR far away. We add kRange*log10(d/REF) to normalise to REF.
+// =============================================================================
+function compensate(snr, dist) {
+  return snr + TUNE.kRange * Math.log10(Math.max(dist, 3) / CFG.REF_DIST);
+}
+function rawClass(comp, speed) {
+  if (comp >= TUNE.tHeavy && speed >= 3) return 'HVY';
+  if (comp < TUNE.tCar) {
+    if (speed <= TUNE.vPed) return 'PED';
+    if (speed <= TUNE.vCyc) return 'CYC';
+  }
+  return 'CAR';
+}
+function classifyTrack(tr) {
+  tr.votes.push(rawClass(tr.compEma, tr.speedEma));
+  if (tr.votes.length > CFG.VOTE_WINDOW) tr.votes.shift();
+  const cnt = {};
+  for (const v of tr.votes) cnt[v] = (cnt[v] || 0) + 1;
+  let best = 'CAR', bc = 0;
+  for (const k in cnt) if (cnt[k] > bc) { best = k; bc = cnt[k]; }
+  // confidence = vote agreement x distance from nearest SNR decision boundary
+  const margin = Math.min(Math.abs(tr.compEma - TUNE.tCar), Math.abs(tr.compEma - TUNE.tHeavy));
+  const mf = clamp(0.55 + margin / 60, 0.55, 1);
+  const warm = clamp(tr.votes.length / 5, 0.4, 1);          // few frames -> lower
+  tr.cls = best;
+  tr.conf = (bc / tr.votes.length) * mf * warm;
+}
+
+// =============================================================================
+//  TRACKER  (LD2451 target IDs are just list positions; associate by gating)
+// =============================================================================
+let tracks = [], nextTid = 1;
+function updateTracks(targets, tNow) {
+  const used = new Set();
+  const cands = [];
+  for (let i = 0; i < targets.length; i++) for (const tr of tracks) {
+    const t = targets[i];
+    if (t.dir !== tr.dir) continue;
+    const dd = Math.abs(t.dist - tr.dist), da = Math.abs(t.angle - tr.angle);
+    if (dd <= CFG.GATE_DIST_M && da <= CFG.GATE_ANGLE_DEG) cands.push({ i, tr, cost: dd + 0.5 * da });
+  }
+  cands.sort((a, b) => a.cost - b.cost);
+  const assigned = new Map();
+  for (const c of cands) {
+    if (assigned.has(c.i) || used.has(c.tr)) continue;
+    assigned.set(c.i, c.tr); used.add(c.tr);
+  }
+  targets.forEach((t, i) => {
+    let tr = assigned.get(i);
+    const comp = compensate(t.snr, t.dist);
+    if (!tr) {
+      tr = { tid: nextTid++, votes: [], trail: [], compEma: comp, speedEma: t.speed,
+             color: PALETTE[(nextTid - 2) % PALETTE.length], born: tNow };
+      tracks.push(tr);
+    }
+    Object.assign(tr, { dist: t.dist, angle: t.angle, dir: t.dir, speed: t.speed, snr: t.snr,
+                        rid: t.id, lastSeen: tNow, comp });
+    tr.compEma += 0.3 * (comp - tr.compEma);
+    tr.speedEma += 0.3 * (t.speed - tr.speedEma);
+    tr.trail.push({ t: tNow, a: t.angle, d: t.dist });
+    classifyTrack(tr);
+  });
+  tracks = tracks.filter(tr => tNow - tr.lastSeen < CFG.TRACK_TIMEOUT_MS);
+}
+const activeTracks = () => {
+  const n = performance.now();
+  return tracks.filter(tr => n - tr.lastSeen < 600).sort((a, b) => a.dist - b.dist);
+};
+
+// =============================================================================
+//  RADAR CANVAS
+// =============================================================================
+const rc = $('radar'), rctx = rc.getContext('2d');
+let angScale = 2.25;                   // visual expansion of the ±20° sector
+function fitCanvas(c) {
+  const dpr = devicePixelRatio || 1, r = c.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return dpr;
+}
+const rad = d => d * Math.PI / 180;
+function drawRadar(ts) {
+  const dpr = fitCanvas(rc), w = rc.width, h = rc.height, ctx = rctx;
+  const half = CFG.FOV * angScale, pad = 30 * dpr;
+  const R = Math.max(10, Math.min(h - pad * 1.5, (w / 2 - pad) / Math.sin(rad(half))));
+  const ox = w / 2, oy = h - pad * 0.6;
+  const P = (ang, d) => {
+    const a = rad(clamp(ang, -CFG.FOV, CFG.FOV) * angScale), r = clamp(d, 0, CFG.MAX_RANGE) / CFG.MAX_RANGE * R;
+    return [ox + r * Math.sin(a), oy - r * Math.cos(a)];
+  };
+  ctx.clearRect(0, 0, w, h);
+  // sector fill
+  const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, R);
+  g.addColorStop(0, 'rgba(63,182,255,.12)'); g.addColorStop(1, 'rgba(63,182,255,.02)');
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.arc(ox, oy, R, -Math.PI / 2 - rad(half), -Math.PI / 2 + rad(half));
+  ctx.closePath(); ctx.fillStyle = g; ctx.fill();
+  // rings
+  ctx.lineWidth = dpr; ctx.font = `${10.5 * dpr}px ui-monospace,monospace`;
+  for (let m = 20; m <= CFG.MAX_RANGE; m += 20) {
+    const r = m / CFG.MAX_RANGE * R;
+    ctx.beginPath(); ctx.arc(ox, oy, r, -Math.PI / 2 - rad(half), -Math.PI / 2 + rad(half));
+    ctx.strokeStyle = m === CFG.MAX_RANGE ? 'rgba(63,182,255,.55)' : 'rgba(63,182,255,.2)'; ctx.stroke();
+    const [lx, ly] = P(CFG.FOV, m), txt = `${m} m`, tw = ctx.measureText(txt).width;
+    ctx.fillStyle = '#6f7f95'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(txt, Math.min(lx + 6 * dpr, w - tw - 2 * dpr), ly + 2 * dpr);
+  }
+  // spokes every 5°
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  for (let a = -CFG.FOV; a <= CFG.FOV; a += 5) {
+    const [x, y] = P(a, CFG.MAX_RANGE);
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y);
+    ctx.strokeStyle = a === 0 ? 'rgba(63,182,255,.45)' : 'rgba(63,182,255,.14)'; ctx.stroke();
+    if (a % 10 === 0) {
+      const aa = rad(a * angScale), tx = ox + (R + 12 * dpr) * Math.sin(aa), ty = oy - (R + 12 * dpr) * Math.cos(aa);
+      ctx.fillStyle = '#6f7f95'; ctx.fillText(`${a > 0 ? '+' : ''}${a}°`, tx, ty + 6 * dpr);
+    }
+  }
+  // sweep
+  const sw = Math.sin(ts / 1000) * CFG.FOV;
+  const [sx, sy] = P(sw, CFG.MAX_RANGE);
+  const sg = ctx.createLinearGradient(ox, oy, sx, sy);
+  sg.addColorStop(0, 'rgba(63,182,255,0)'); sg.addColorStop(1, 'rgba(63,182,255,.75)');
+  ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(sx, sy); ctx.strokeStyle = sg; ctx.lineWidth = 2 * dpr; ctx.stroke();
+
+  const nowT = performance.now();
+  for (const tr of tracks) {
+    // trail
+    tr.trail = tr.trail.filter(p => nowT - p.t < CFG.TRAIL_MS);
+    const rgb = tr.dir ? '255,77,94' : '47,209,138';
+    for (let i = 1; i < tr.trail.length; i++) {
+      const a = tr.trail[i - 1], b = tr.trail[i], al = 0.6 * (1 - (nowT - b.t) / CFG.TRAIL_MS);
+      const [x1, y1] = P(a.a, a.d), [x2, y2] = P(b.a, b.d);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.strokeStyle = `rgba(${rgb},${al})`; ctx.lineWidth = 3 * dpr; ctx.lineCap = 'round'; ctx.stroke();
+    }
+    if (nowT - tr.lastSeen > 600) continue;
+    const [x, y] = P(tr.angle, tr.dist), col = tr.dir ? '#ff4d5e' : '#2fd18a';
+    const pulse = 1 + 0.25 * Math.sin(ts / 150);
+    ctx.beginPath(); ctx.arc(x, y, 13 * dpr * pulse, 0, Math.PI * 2); ctx.fillStyle = `rgba(${rgb},.14)`; ctx.fill();
+    if (tr.tid === selectedTid()) {
+      ctx.beginPath(); ctx.arc(x, y, 11 * dpr, 0, Math.PI * 2); ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 2 * dpr; ctx.stroke();
+    }
+    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 12 * dpr;
+    ctx.beginPath(); ctx.arc(x, y, 6 * dpr, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill(); ctx.restore();
+    const label = `T${tr.tid} ${CLASSES[tr.cls].ico} ${tr.speed} km/h`;
+    ctx.font = `600 ${11.5 * dpr}px ui-monospace,monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(label).width, lx = Math.min(x + 12 * dpr, w - tw - 8 * dpr);
+    ctx.fillStyle = 'rgba(9,13,18,.82)'; ctx.fillRect(lx - 4 * dpr, y - 10 * dpr, tw + 8 * dpr, 20 * dpr);
+    ctx.fillStyle = col; ctx.fillText(label, lx, y);
+  }
+  ctx.beginPath(); ctx.arc(ox, oy, 5 * dpr, 0, Math.PI * 2); ctx.fillStyle = '#3fb6ff'; ctx.fill();
+}
+$('btnExpand').onclick = e => {
+  angScale = angScale === 1 ? 2.25 : 1;
+  e.target.classList.toggle('toggled', angScale !== 1);
+  e.target.textContent = angScale === 1 ? 'True geometry' : 'Angle ×2.25';
+  $('geoNote').textContent = angScale === 1 ? 'True ±20° geometry'
+    : 'Angle axis expanded ×2.25 for readability (labels show true angle)';
+};
+
+// =============================================================================
+//  SHAPE PANEL (silhouettes are drawn facing right; mirrored when approaching)
+// =============================================================================
+const SHAPES = {
+  PED: { box: [176, 52, 48, 128], body: `
+    <circle cx="200" cy="68" r="12"/>
+    <path d="M200 82 L200 132 M200 92 L184 118 M200 92 L216 116 M200 132 L188 178 M200 132 L213 178" fill="none" stroke-width="7" stroke-linecap="round"/>` },
+  CYC: { box: [128, 54, 144, 126], body: `
+    <circle cx="156" cy="154" r="24" fill="none" stroke-width="4"/><circle cx="244" cy="154" r="24" fill="none" stroke-width="4"/>
+    <path d="M156 154 L186 118 L230 118 L244 154 M186 118 L200 154 L156 154 M200 154 L230 118 M182 110 L196 110 M230 118 L226 104 L238 101" fill="none" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="206" cy="68" r="10"/>
+    <path d="M206 80 L194 110 M204 88 L230 102 M194 110 L208 136 L200 154" fill="none" stroke-width="6" stroke-linecap="round"/>` },
+  CAR: { box: [62, 82, 290, 98], body: `
+    <path d="M70 160 L70 136 Q74 126 96 122 L140 116 L178 92 Q190 86 212 86 L262 86 Q284 86 298 100 L318 118 L338 122 Q348 126 348 142 L348 160 Z" fill-opacity=".18" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M152 116 L184 96 Q192 92 208 92 L232 92 L232 116 Z M240 92 L262 92 Q278 94 290 104 L302 116 L240 116 Z" fill-opacity=".35" stroke-width="2"/>
+    <path d="M70 140 L348 140" stroke-width="1.5" stroke-dasharray="4 4" fill="none"/>
+    <circle cx="118" cy="160" r="20" fill="#0b1118" stroke-width="4"/><circle cx="118" cy="160" r="7"/>
+    <circle cx="298" cy="160" r="20" fill="#0b1118" stroke-width="4"/><circle cx="298" cy="160" r="7"/>` },
+  HVY: { box: [22, 50, 358, 130], body: `
+    <path d="M30 60 L268 60 L268 166 L30 166 Z" fill-opacity=".16" stroke-width="3"/>
+    <path d="M30 86 L268 86 M30 112 L268 112 M30 138 L268 138" stroke-width="1" stroke-dasharray="3 6" fill="none"/>
+    <path d="M276 166 L276 92 L330 92 Q352 94 360 116 L370 138 L370 166 Z" fill-opacity=".22" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M288 100 L330 100 Q344 102 350 122 L288 122 Z" fill-opacity=".4" stroke-width="2"/>
+    <circle cx="66" cy="166" r="14" fill="#0b1118" stroke-width="4"/><circle cx="102" cy="166" r="14" fill="#0b1118" stroke-width="4"/>
+    <circle cx="232" cy="166" r="14" fill="#0b1118" stroke-width="4"/><circle cx="342" cy="166" r="14" fill="#0b1118" stroke-width="4"/>` },
+};
+let lastShapeKey = '';
+function seeded(n) { const x = Math.sin(n * 9301 + 49297) * 233280; return x - Math.floor(x); }
+function renderShape(tr) {
+  const svg = $('shapeSvg');
+  if (!tr) { svg.innerHTML = ''; $('shapeEmpty').style.display = 'flex'; lastShapeKey = ''; return; }
+  $('shapeEmpty').style.display = 'none';
+  const bucket = Math.round(clamp(tr.compEma, 0, 255) / 25);
+  const key = `${tr.tid}|${tr.cls}|${tr.dir}|${bucket}`;
+  if (key === lastShapeKey) return;            // avoid restarting SVG animations
+  lastShapeKey = key;
+  const S = SHAPES[tr.cls], C = CLASSES[tr.cls];
+  const col = tr.dir ? '#ff4d5e' : '#2fd18a';
+  const [bx, by, bw, bh] = S.box;
+  const refl = clamp(tr.compEma / 255, 0.05, 1);
+  const flip = tr.dir ? 'transform="translate(400 0) scale(-1 1)"' : '';   // approaching -> face left (◀)
+  const fx = 200, fRx = 40 + refl * 150;
+  // pseudo-random scattering centres inside the bounding box (count ~ reflection)
+  let pts = '';
+  const n = 3 + Math.round(refl * 9);
+  for (let i = 0; i < n; i++) {
+    const px = bx + 6 + seeded(tr.tid * 31 + i) * (bw - 12), py = by + 6 + seeded(tr.tid * 17 + i * 7) * (bh - 12);
+    pts += `<circle class="rp" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(2 + refl * 3).toFixed(1)}" fill="#fff">
+      <animate attributeName="opacity" values="0.1;0.95;0.1" dur="${(0.9 + seeded(i) * 1.2).toFixed(2)}s" repeatCount="indefinite"/></circle>`;
+  }
+  svg.innerHTML = `
+  <defs>
+    <radialGradient id="fp"><stop offset="0" stop-color="${col}" stop-opacity=".55"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#1a2735" stroke-width="1"/></pattern>
+  </defs>
+  <rect width="400" height="220" fill="url(#grid)"/>
+  <line x1="0" y1="181" x2="400" y2="181" stroke="#2a3a4d" stroke-width="1.5"/>
+  <ellipse cx="${fx}" cy="186" rx="${fRx.toFixed(1)}" ry="${(6 + refl * 8).toFixed(1)}" fill="url(#fp)">
+    <animate attributeName="opacity" values=".6;1;.6" dur="1.6s" repeatCount="indefinite"/></ellipse>
+  <g ${flip} fill="${col}" stroke="${col}">${S.body}</g>
+  <rect x="${bx}" y="${by}" width="${bw}" height="${bh}" fill="none" stroke="#3fb6ff" stroke-width="1.5" stroke-dasharray="6 5" rx="3"/>
+  <path d="M${bx} ${by + 12} L${bx} ${by} L${bx + 12} ${by} M${bx + bw - 12} ${by} L${bx + bw} ${by} L${bx + bw} ${by + 12}
+           M${bx} ${by + bh - 12} L${bx} ${by + bh} L${bx + 12} ${by + bh} M${bx + bw - 12} ${by + bh} L${bx + bw} ${by + bh} L${bx + bw} ${by + bh - 12}"
+        stroke="#3fb6ff" stroke-width="3" fill="none"/>
+  <line x1="${bx}" x2="${bx + bw}" y1="${by}" y2="${by}" stroke="#3fb6ff" stroke-opacity=".7" stroke-width="2">
+    <animate attributeName="y1" values="${by};${by + bh};${by}" dur="2.4s" repeatCount="indefinite"/>
+    <animate attributeName="y2" values="${by};${by + bh};${by}" dur="2.4s" repeatCount="indefinite"/></line>
+  ${pts}
+  <text x="${bx + bw / 2}" y="${by - 7}" fill="#9fb4cc" font-size="11" font-family="ui-monospace,monospace" text-anchor="middle">L ${C.L} · ${C.ico} ${C.name.toUpperCase()}</text>
+  <text x="${bx + bw + 8}" y="${by + bh / 2}" fill="#9fb4cc" font-size="11" font-family="ui-monospace,monospace"
+        transform="rotate(90 ${bx + bw + 8} ${by + bh / 2})" text-anchor="middle">H ${C.H}</text>
+  <text x="392" y="212" fill="${col}" font-size="11" font-family="ui-monospace,monospace" text-anchor="end">${tr.dir ? '◀ APPROACHING' : 'MOVING AWAY ▶'}</text>`;
+}
+
+let pinnedTid = null;
+function selectedTid() {
+  const act = activeTracks();
+  if (pinnedTid != null && act.some(t => t.tid === pinnedTid)) return pinnedTid;
+  return act.length ? act[0].tid : null;
+}
+function updateClassPanel() {
+  const act = activeTracks(), sid = selectedTid(), tr = act.find(t => t.tid === sid);
+  $('selInfo').textContent = tr ? (pinnedTid === sid ? `pinned: T${sid} (click again to unpin)` : `auto: nearest · T${sid}`) : 'auto: nearest';
+  renderShape(tr);
+  const C = tr ? CLASSES[tr.cls] : null;
+  $('clsName').textContent = C ? `${C.ico} ${C.name}` : '—';
+  $('clsName').style.color = tr ? (tr.dir ? 'var(--red)' : 'var(--green)') : '';
+  $('clsSub').textContent = C ? `${C.sub} · track T${tr.tid}` : 'waiting for targets';
+  const conf = tr ? Math.round(tr.conf * 100) : 0, snr = tr ? tr.snr : 0, ref = tr ? clamp(tr.compEma / 255, 0, 1) : 0;
+  $('confV').textContent = tr ? `${conf}%` : '—'; $('confB').style.width = `${conf}%`;
+  $('snrV').textContent = tr ? `${snr} / 255` : '—'; $('snrB').style.width = `${snr / 2.55}%`;
+  $('refV').textContent = tr ? tr.compEma.toFixed(0) : '—'; $('refB').style.width = `${ref * 100}%`;
+  [...$('sizes').children].forEach((s, i) => s.classList.toggle('on', !!C && i === C.size));
+  $('dims').textContent = C ? C.dims : '—';
+  $('rcs').textContent = C ? C.rcs : '—';
+  $('ds').textContent = tr ? `${tr.dist} m · ${tr.speed} km/h` : '—';
+  $('chips').innerHTML = act.map(t => `<span class="chip ${t.tid === sid ? 'sel' : ''}" data-tid="${t.tid}"
+    style="color:${t.dir ? 'var(--red)' : 'var(--green)'}">T${t.tid} ${CLASSES[t.cls].ico} ${t.dist}m</span>`).join('');
+}
+function togglePin(tid) { pinnedTid = (pinnedTid === tid) ? null : tid; updateClassPanel(); renderTable(); }
+$('chips').onclick = e => { const c = e.target.closest('[data-tid]'); if (c) togglePin(+c.dataset.tid); };
+for (const k of Object.keys(TUNE)) {
+  $(k).addEventListener('input', e => {
+    TUNE[k] = +e.target.value; $(k + 'O').textContent = e.target.value;
+    tracks.forEach(t => t.votes = []); lastShapeKey = '';
+  });
+}
+
+// =============================================================================
+//  TABLE
+// =============================================================================
+function renderTable() {
+  const act = activeTracks(), sid = selectedTid();
+  $('tcount').textContent = $('tcount2').textContent = act.length;
+  $('tbody').innerHTML = act.length ? act.map(t => {
+    const C = CLASSES[t.cls];
+    return `<tr data-tid="${t.tid}" class="${t.tid === sid ? 'sel' : ''}">
+      <td><span style="color:${t.color}">■</span> T${t.tid} <span style="color:var(--muted)">(#${t.rid})</span></td>
+      <td><span class="ico">${C.ico}</span>${C.name} <span style="color:var(--muted)">${Math.round(t.conf * 100)}%</span></td>
+      <td>${t.dist}</td><td>${t.speed}</td><td>${t.angle > 0 ? '+' : ''}${t.angle}</td>
+      <td class="${t.dir ? 'a' : 'g'}">${t.dir ? '▼ Approaching' : '▲ Moving away'}</td><td>${t.snr}</td></tr>`;
+  }).join('') : '<tr class="empty"><td colspan="7">No targets</td></tr>';
+}
+$('tbody').onclick = e => { const r = e.target.closest('tr[data-tid]'); if (r) togglePin(+r.dataset.tid); };
+
+// =============================================================================
+//  CHARTS (one dataset per track)
+// =============================================================================
+let chD = null, chS = null;
+function mkChart(id, unit) {
+  return new Chart($(id), {
+    type: 'line', data: { datasets: [] },
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
+      interaction: { intersect: false, mode: 'nearest', axis: 'x' },
+      plugins: { legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
+                 tooltip: { callbacks: { title: it => `${(it[0].parsed.x - nowS()).toFixed(1)} s`,
+                                         label: it => `${it.dataset.label}: ${it.parsed.y} ${unit}` } } },
+      scales: { x: { type: 'linear', ticks: { maxTicksLimit: 7, callback: v => `${Math.round(v - nowS())}s` }, grid: { color: '#18212c' } },
+                y: { beginAtZero: true, suggestedMax: 20, grid: { color: '#18212c' } } },
+      layout: { padding: { top: 14 } },
+    },
+  });
+}
+if (window.Chart) {
+  Chart.defaults.color = '#75839a'; Chart.defaults.borderColor = '#222d3b';
+  chD = mkChart('cDist', 'm'); chS = mkChart('cSpd', 'km/h');
+} else { $('charts').style.display = 'none'; $('chartErr').style.display = 'block'; }
+function dsFor(chart, tr) {
+  let ds = chart.data.datasets.find(d => d.tid === tr.tid);
+  if (!ds) {
+    ds = { tid: tr.tid, label: `T${tr.tid}`, data: [], borderColor: tr.color, backgroundColor: tr.color,
+           borderWidth: 2, pointRadius: 0, tension: 0.25 };
+    chart.data.datasets.push(ds);
+  }
+  ds.label = `T${tr.tid} ${CLASSES[tr.cls].ico}`;
+  return ds;
+}
+function chartPush(trs) {
+  if (!chD) return;
+  const x = nowS();
+  for (const tr of trs) { dsFor(chD, tr).data.push({ x, y: tr.dist }); dsFor(chS, tr).data.push({ x, y: tr.speed }); }
+}
+function chartRefresh() {
+  if (!chD) return;
+  const x = nowS(), min = x - CFG.CHART_WINDOW_S, sid = selectedTid();
+  for (const ch of [chD, chS]) {
+    for (const d of ch.data.datasets) { while (d.data.length && d.data[0].x < min) d.data.shift();
+      d.borderWidth = d.tid === sid ? 3.5 : 1.6; }
+    ch.data.datasets = ch.data.datasets.filter(d => d.data.length);
+    ch.options.scales.x.min = min; ch.options.scales.x.max = x; ch.update('none');
+  }
+}
+
+// =============================================================================
+//  RAW HEX LOG
+// =============================================================================
+let hexPaused = false, hexLines = 0;
+const hexLog = $('hexLog');
+const ts = () => { const d = new Date(); return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0'); };
+function logLine(text, cls = 'h', prefix = '') {
+  if (hexPaused || !$('hexPanel').classList.contains('on')) return;
+  const div = document.createElement('div');
+  div.innerHTML = `<span class="ts">${ts()}</span> ${prefix}<span class="${cls}"></span>`;
+  div.lastChild.textContent = text;
+  const stick = hexLog.scrollTop + hexLog.clientHeight >= hexLog.scrollHeight - 20;
+  hexLog.appendChild(div);
+  if (++hexLines > CFG.HEX_MAX_LINES) { hexLog.firstChild.remove(); hexLines--; }
+  if (stick) hexLog.scrollTop = hexLog.scrollHeight;
+  $('hexCount').textContent = `${hexLines} lines`;
+}
+$('btnHex').onclick = e => {
+  const on = $('hexPanel').classList.toggle('on');
+  e.target.textContent = on ? 'Hide raw hex monitor' : 'Show raw hex monitor';
+  e.target.classList.toggle('toggled', on);
+};
+$('btnPause').onclick = e => { hexPaused = !hexPaused; e.target.textContent = hexPaused ? 'Resume' : 'Pause';
+  e.target.classList.toggle('toggled', hexPaused); };
+$('btnClear').onclick = () => { hexLog.innerHTML = ''; hexLines = 0; $('hexCount').textContent = '0 lines'; };
+$('btnRawEsp').onclick = () => sendCmd('x');
+
+// =============================================================================
+//  MESSAGE HANDLING (shared by Web Serial and Demo)
+// =============================================================================
+const frameTimes = [];
+let lastFrameAt = 0, pendingUI = false;
+function handleLine(line) {
+  if (line[0] !== '{') { if (line.trim()) logLine(line, 'i'); return; }  // '#' info / boot noise
+  let m; try { m = JSON.parse(line); } catch { logLine(line, 'e', 'BAD JSON '); return; }
+  if (m.type === 'frame') onFrame(m);
+  else if (m.type === 'status') onStatus(m);
+}
+function onFrame(m) {
+  const tNow = performance.now();
+  lastFrameAt = tNow; frameTimes.push(tNow);
+  const targets = (m.targets || []).map(t => ({ ...t, dir: t.dir ? 1 : 0 }));
+  updateTracks(targets, tNow);
+  const matched = tracks.filter(tr => tr.lastSeen === tNow);
+  chartPush(matched);
+  $('alarm').classList.toggle('on', m.alarm === 1);
+  if (m.raw && (targets.length || $('chkEmpty').checked))
+    logLine(m.raw, 'h', `#${String(m.seq).padEnd(6)} n=${targets.length} `);
+  pendingUI = true;
+}
+function onStatus(s) {
+  $('stats').textContent = `frames ${s.frames} · bytes ${s.bytes} · len err ${s.lenErr} · tail err ${s.tailErr} · tx drop ${s.txDrop}`;
+  if (typeof s.raw === 'boolean') $('btnRawEsp').textContent = `ESP raw field: ${s.raw ? 'ON' : 'OFF'}`;
+}
+
+// =============================================================================
+//  WEB SERIAL
+// =============================================================================
+let port = null, reader = null, readDone = null, connected = false;
+function setConn(state, text) {
+  const c = $('conn'); c.className = 'pill ' + state; c.textContent = text;
+}
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    alert('Web Serial is not available.\nUse desktop Chrome or Edge (v89+), and open this page via file:// or https://.');
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: +$('baud').value, bufferSize: 65536 });
+  } catch (e) { setConn('bad', e.name === 'NotFoundError' ? 'no port selected' : 'open failed'); logLine(String(e), 'e'); port = null; return; }
+  stopDemo();
+  connected = true;
+  $('btnConnect').textContent = 'Disconnect'; $('btnConnect').classList.add('on');
+  const info = port.getInfo();
+  setConn('ok', `USB ${info.usbVendorId ? info.usbVendorId.toString(16).padStart(4, '0') + ':' + info.usbProductId.toString(16).padStart(4, '0') : ''} @ ${$('baud').value}`);
+  readLoop();
+}
+async function readLoop() {
+  while (port && port.readable && connected) {
+    const dec = new TextDecoderStream();
+    readDone = port.readable.pipeTo(dec.writable).catch(() => {});
+    reader = dec.readable.getReader();
+    let buf = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).replace(/\r$/, '');
+          buf = buf.slice(i + 1);
+          if (line) handleLine(line);
+        }
+        if (buf.length > 16384) buf = '';            // garbage without newlines
+      }
+    } catch (e) {
+      logLine(`serial read error: ${e.message} (retrying)`, 'e');   // e.g. framing/buffer overrun
+    } finally { reader.releaseLock(); }
+    await readDone;
+  }
+}
+async function disconnectSerial() {
+  connected = false;
+  try { if (reader) await reader.cancel(); } catch {}
+  try { if (readDone) await readDone; } catch {}
+  try { if (port) await port.close(); } catch {}
+  port = null; reader = null;
+  $('btnConnect').textContent = 'Connect ESP32 (USB)'; $('btnConnect').classList.remove('on');
+  setConn('bad', 'disconnected');
+}
+async function sendCmd(ch) {
+  if (!port || !port.writable) { logLine('not connected – command not sent', 'e'); return; }
+  const w = port.writable.getWriter();
+  try { await w.write(new TextEncoder().encode(ch)); } finally { w.releaseLock(); }
+}
+$('btnConnect').onclick = () => connected ? disconnectSerial() : connectSerial();
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', e => {
+  if (port && e.target === port) { logLine('USB device unplugged', 'e'); disconnectSerial(); }
+});
+
+// =============================================================================
+//  DEMO MODE (synthetic traffic through the same JSON path)
+// =============================================================================
+let demoTimer = null;
+function stopDemo() {
+  if (!demoTimer) return;
+  clearInterval(demoTimer); demoTimer = null;
+  $('btnDemo').classList.remove('toggled'); $('btnDemo').textContent = 'Demo';
+  if (!connected) setConn('bad', 'disconnected');
+}
+function startDemo() {
+  if (connected) return;
+  let k = 0, seq = 0;
+  const actors = [
+    { kind: 'car',   d: 95, a: -6, v: 52, dir: 1, snr: 105 },
+    { kind: 'truck', d: 20, a: 9,  v: 38, dir: 0, snr: 190 },
+    { kind: 'ped',   d: 14, a: -15, v: 5, dir: 1, snr: 45 },
+    { kind: 'bike',  d: 60, a: 15, v: 22, dir: 1, snr: 60 },
+  ];
+  demoTimer = setInterval(() => {
+    k++;
+    const out = [];
+    for (const o of actors) {
+      const step = o.v / 3.6 * 0.1;                  // 10 Hz
+      o.d += o.dir ? -step : step;
+      if (o.d < 4) o.d = 98; if (o.d > 99) o.d = 8;
+      const snr = clamp(Math.round(o.snr + (Math.random() - 0.5) * 18 - (o.d - 30) * 0.25), 1, 255);
+      out.push({ angle: Math.round(o.a + Math.sin(k / 15 + o.d) * 1.2), dist: Math.round(o.d), dir: o.dir,
+                 speed: Math.max(0, Math.round(o.v + (Math.random() - 0.5) * 3)), snr });
+    }
+    const bytes = [0xF4, 0xF3, 0xF2, 0xF1, 2 + out.length * 5, 0, out.length, out.some(t => t.dir) ? 1 : 0];
+    out.forEach(t => bytes.push(t.angle + 0x80, t.dist, t.dir, t.speed, t.snr));
+    bytes.push(0xF8, 0xF7, 0xF6, 0xF5);
+    const msg = { type: 'frame', seq: ++seq, ms: k * 100, alarm: bytes[7],
+                  targets: out.map((t, i) => ({ id: i + 1, ...t })),
+                  raw: bytes.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ') };
+    handleLine(JSON.stringify(msg));
+    if (k % 10 === 0) handleLine(JSON.stringify({ type: 'status', frames: seq, bytes: seq * 30, lenErr: 0, tailErr: 0, txDrop: 0, raw: true }));
+  }, 100);
+  $('btnDemo').classList.add('toggled'); $('btnDemo').textContent = 'Stop demo';
+  setConn('demo', 'demo data');
+}
+$('btnDemo').onclick = () => demoTimer ? stopDemo() : startDemo();
+
+// =============================================================================
+//  RENDER LOOP
+// =============================================================================
+let lastUI = 0, lastChart = 0;
+function tick(t) {
+  drawRadar(t);
+  const n = performance.now();
+  while (frameTimes.length && n - frameTimes[0] > 2000) frameTimes.shift();
+  $('fps').textContent = `${(frameTimes.length / 2).toFixed(1)} fps`;
+  if (n - lastUI > 100 && (pendingUI || n - lastFrameAt > 600)) {   // ~10 Hz DOM updates
+    lastUI = n; pendingUI = false; renderTable(); updateClassPanel();
+    if (n - lastFrameAt > 1500) $('alarm').classList.remove('on');
+  }
+  if (n - lastChart > 200) { lastChart = n; chartRefresh(); }        // ~5 Hz charts
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
